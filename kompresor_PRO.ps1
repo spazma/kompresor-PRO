@@ -1,4 +1,4 @@
-﻿# Kompresor PRO (PowerShell + ffmpeg) by padre_spazma
+﻿# Kompresor PRO (PowerShell + ffmpeg) - zmiany: auto-save folders, archive folder UI, ensure-folder prompt
 
 Remove-Variable pad,labelW,textW,btnW,leftX,btnRightX,txtInputX,btnBrowseInX,txtOutputX,btnBrowseOutX -ErrorAction SilentlyContinue
 
@@ -22,6 +22,10 @@ $ffprobeExe = if (Test-Path $candidateFfprobe) { $candidateFfprobe } else { 'ffp
 $global:gpuOk = $false
 $global:AvailableEncoders = @{}
 
+# settings file path (in script dir)
+$baseDirGlobal = Get-ScriptBaseDirectory
+$settingsFileGlobal = Join-Path $baseDirGlobal 'kompresor_settings.json'
+
 function Log {
     param([string]$Text)
     if ($rtLog) {
@@ -34,6 +38,71 @@ function Log {
     }
 }
 
+function Save-Settings {
+    param()
+    try {
+        $data = @{
+            DefaultInput = $txtInput.Text
+            DefaultOutput = $txtOutput.Text
+            DefaultArchive = $txtArchive.Text
+        }
+        $json = $data | ConvertTo-Json -Depth 4
+        $json | Set-Content -Path $settingsFileGlobal -Encoding UTF8
+    } catch {
+        Log "Nie udało się zapisać settings: $($_.Exception.Message)"
+    }
+}
+
+function Ensure-FolderExists {
+    param(
+        [string]$Path,
+        [bool]$PromptIfMissing = $true
+    )
+    if ($null -eq $Path -or $Path -eq '') { return $false }
+    if (Test-Path $Path) { return $true }
+    if (-not $PromptIfMissing) {
+        try { New-Item -ItemType Directory -Path $Path -Force | Out-Null; return (Test-Path $Path) } catch { return $false }
+    }
+
+    $msg = "Katalog `"$Path`" nie istnieje. Utworzyć go?"
+    $res = [System.Windows.Forms.MessageBox]::Show($msg,"Brak katalogu",[System.Windows.Forms.MessageBoxButtons]::YesNo,[System.Windows.Forms.MessageBoxIcon]::Question)
+    if ($res -eq [System.Windows.Forms.DialogResult]::Yes) {
+        try {
+            New-Item -ItemType Directory -Path $Path -Force | Out-Null
+            if (Test-Path $Path) { Log ("Utworzono katalog: {0}" -f $Path); return $true } else { [System.Windows.Forms.MessageBox]::Show("Nie udało się utworzyć katalogu: $Path","Błąd",[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Error); return $false }
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Błąd tworzenia katalogu: $($_.Exception.Message)","Błąd",[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Error)
+            return $false
+        }
+    } else {
+        return $false
+    }
+}
+
+function Get-UniqueFilePath {
+    param([string]$Path)
+
+    if (-not $Path) { return $Path }
+    $dir  = Split-Path $Path -Parent
+    $name = Split-Path $Path -Leaf
+    $base = [IO.Path]::GetFileNameWithoutExtension($name)
+    $ext  = [IO.Path]::GetExtension($name)
+
+    $candidate = Join-Path $dir $name
+    $i = 0
+    while (Test-Path $candidate) {
+        $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
+        if ($i -eq 0) {
+            $newName = "{0}_{1}{2}" -f $base, $ts, $ext
+        } else {
+            $newName = "{0}_{1}-{2}{3}" -f $base, $ts, $i, $ext
+        }
+        $candidate = Join-Path $dir $newName
+        $i++
+    }
+    return $candidate
+}
+
 function Choose-Folder {
     param([Alias('T')][System.Windows.Forms.TextBox]$Target)
     if ($null -eq $Target) { Log "Choose-Folder: brak kontrolki TextBox (parametr był null)."; return }
@@ -42,7 +111,10 @@ function Choose-Folder {
     if ($Target.Text -and (Test-Path $Target.Text)) { $f.SelectedPath = $Target.Text }
     if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         $Target.Text = $f.SelectedPath
-        try { if ($Target -eq $txtInput) { Load-Files } } catch { Log "Choose-Folder: $($_.Exception.Message)" }
+        try { 
+            if ($Target -eq $txtInput) { Load-Files } 
+        } catch { Log "Choose-Folder: $($_.Exception.Message)" }
+        Save-Settings
     }
 }
 
@@ -217,7 +289,7 @@ $clrRowAlt = [System.Drawing.Color]::FromArgb(26,26,28)
 # ---------- Form ----------
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Kompresor PRO (PowerShell + ffmpeg)"
-$form.Size = [System.Drawing.Size]::new(1180, 820)
+$form.Size = [System.Drawing.Size]::new(1180, 860)
 $form.StartPosition = "CenterScreen"
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
 $form.BackColor = $clrFormBg
@@ -226,7 +298,7 @@ $form.MinimumSize = [System.Drawing.Size]::new(900, 640)
 
 [int]$pad = 12
 [int]$labelW = 140
-[int]$textW = 760
+[int]$textW = 700
 [int]$btnW = 96
 
 # ---------- Top controls ----------
@@ -280,6 +352,33 @@ $btnBrowseOut.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(204,
 $btnBrowseOut.FlatAppearance.BorderSize = 1
 [void]$form.Controls.Add($btnBrowseOut)
 
+# Archive folder label + controls (new)
+$lblArchive = New-Object System.Windows.Forms.Label
+$lblArchive.Text = "Folder archiwum:"
+$lblArchive.Location = [System.Drawing.Point]::new($pad,86)
+$lblArchive.Size = [System.Drawing.Size]::new($labelW,24)
+$lblArchive.ForeColor = $clrText
+[void]$form.Controls.Add($lblArchive)
+
+$txtArchive = New-Object System.Windows.Forms.TextBox
+$txtArchive.Location = [System.Drawing.Point]::new($pad + $labelW,84)
+$txtArchive.Size = [System.Drawing.Size]::new($textW,26)
+$txtArchive.BackColor = $clrControlBg
+$txtArchive.ForeColor = $clrText
+$txtArchive.BorderStyle = "FixedSingle"
+[void]$form.Controls.Add($txtArchive)
+
+$btnBrowseArchive = New-Object System.Windows.Forms.Button
+$btnBrowseArchive.Text = "Wybierz..."
+$btnBrowseArchive.Size = [System.Drawing.Size]::new($btnW,26)
+$btnBrowseArchive.BackColor = [System.Drawing.Color]::FromArgb(50,50,54)
+$btnBrowseArchive.ForeColor = $clrText
+$btnBrowseArchive.FlatStyle = "Flat"
+$btnBrowseArchive.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(204,204,204)
+$btnBrowseArchive.FlatAppearance.BorderSize = 1
+[void]$form.Controls.Add($btnBrowseArchive)
+
+# Load and size
 $btnLoad = New-Object System.Windows.Forms.Button
 $btnLoad.Text = "Wczytaj pliki"
 $btnLoad.Size = [System.Drawing.Size]::new($btnW,36)
@@ -292,13 +391,13 @@ $btnLoad.FlatAppearance.BorderSize = 1
 
 $lblSize = New-Object System.Windows.Forms.Label
 $lblSize.Text = "Max rozmiar (MB):"
-$lblSize.Location = [System.Drawing.Point]::new($pad,92)
+$lblSize.Location = [System.Drawing.Point]::new($pad,124)
 $lblSize.Size = [System.Drawing.Size]::new($labelW,24)
 $lblSize.ForeColor = $clrText
 [void]$form.Controls.Add($lblSize)
 
 $nudSize = New-Object System.Windows.Forms.NumericUpDown
-$nudSize.Location = [System.Drawing.Point]::new($pad + $labelW,90)
+$nudSize.Location = [System.Drawing.Point]::new($pad + $labelW,122)
 $nudSize.Size = [System.Drawing.Size]::new(120,26)
 $nudSize.Minimum = 1
 $nudSize.Maximum = 50000
@@ -357,7 +456,11 @@ $cbAudio = New-Object System.Windows.Forms.ComboBox; $cbAudio.DropDownStyle = 'D
 $nudABitrate = New-Object System.Windows.Forms.NumericUpDown; $nudABitrate.Minimum = 16; $nudABitrate.Maximum = 512; $nudABitrate.Value = 64
 $lblABit = New-Object System.Windows.Forms.Label; $lblABit.Text = "kbps"; $lblABit.ForeColor = $clrMutedText; $lblABit.TextAlign = "MiddleLeft"
 
-$chkDelete = New-Object System.Windows.Forms.CheckBox; $chkDelete.Text = "Usuń oryginał po sukcesie"; $chkDelete.ForeColor = $clrMutedText; $chkDelete.AutoSize = $true; $chkDelete.Visible = $false
+$chkDelete = New-Object System.Windows.Forms.CheckBox
+$chkDelete.Text = "Usuń oryginał po sukcesie"
+$chkDelete.ForeColor = $clrMutedText
+$chkDelete.AutoSize = $true
+$chkDelete.Visible = $true
 [void]$form.Controls.Add($chkDelete)
 
 [void]$tbl.Controls.Add($lblCodec, 0, 0)
@@ -497,13 +600,15 @@ function LayoutControls {
 
     $btnBrowseIn.Location = [System.Drawing.Point]::new($btnRightX, 12)
     $btnBrowseOut.Location = [System.Drawing.Point]::new($btnRightX, 48)
-    $btnLoad.Location = [System.Drawing.Point]::new($btnRightX, 84)
+    $btnBrowseArchive.Location = [System.Drawing.Point]::new($btnRightX, 84)
+    $btnLoad.Location = [System.Drawing.Point]::new($btnRightX, 120)
 
     $btnTogglePro.Location = [System.Drawing.Point]::new(($pad + $labelW + $nudSize.Width + 16), $nudSize.Location.Y)
 
     $txtInput.Width = [int]($btnBrowseIn.Location.X - ($pad + $labelW) - 8)
     if ($txtInput.Width -lt 120) { $txtInput.Width = 120 }
     $txtOutput.Width = $txtInput.Width
+    $txtArchive.Width = $txtInput.Width
 
     [int]$sizeRight = [int]($pad + $labelW + $txtInput.Width)
     [int]$spaceRight = [int]($btnRightX - $sizeRight - 16)
@@ -514,11 +619,13 @@ function LayoutControls {
     [int]$availableFull = [int]($cx - ($pad * 2))
     [int]$topY = [int]($nudSize.Location.Y + $nudSize.Height + 8)
 
+    $chkDelete.Visible = $true
+    $chkDelete.AutoSize = $true
+
     if ($global:proCollapsed) {
         $gbPro.Visible = $false
         $tbl.Visible = $false
         foreach ($ctrl in $tbl.Controls) { $ctrl.Visible = $false }
-        $chkDelete.Visible = $false
         $gbEnc.Visible = $true
 
         $encX = [int]($sizeRight + 12)
@@ -527,13 +634,17 @@ function LayoutControls {
         } else {
             $gbEnc.Location = [System.Drawing.Point]::new($encX, $topY)
         }
+
+        $chkDelete.Location = [System.Drawing.Point]::new(
+            [int]($btnTogglePro.Location.X + $btnTogglePro.Width + 18),
+            [int]($nudSize.Location.Y + 3)
+        )
     }
     else {
         $gbPro.Visible = $true
         $tbl.Visible = $true
         foreach ($ctrl in $tbl.Controls) { $ctrl.Visible = $true }
         $gbEnc.Visible = $true
-        $chkDelete.Visible = $true
 
         if ($spaceRight -ge ($prefProW + $gap + $gbEnc.Width)) {
             $gbPro.Width = $prefProW
@@ -567,7 +678,10 @@ function LayoutControls {
             }
         }
 
-        $chkDelete.Location = [System.Drawing.Point]::new($gbEnc.Location.X, $gbEnc.Location.Y + $gbEnc.Height + 8)
+        $chkDelete.Location = [System.Drawing.Point]::new(
+            [int]($btnTogglePro.Location.X + $btnTogglePro.Width + 18),
+            [int]($nudSize.Location.Y + 3)
+        )
     }
 
     if ($gbPro.Visible) { $gbProBottom = $gbPro.Location.Y + $gbPro.Height } else { $gbProBottom = 0 }
@@ -576,10 +690,10 @@ function LayoutControls {
     [int]$bottomOfPanels = [int][Math]::Max([Math]::Max($gbProBottom, $gbEncBottom), $chkBottom)
 
     [int]$listTop = [int]($bottomOfPanels + 12)
-    if ($listTop -lt 140) { $listTop = 140 }
+    if ($listTop -lt 180) { $listTop = 180 }
 
     $list.Location = [System.Drawing.Point]::new($pad, $listTop)
-    [int]$listHeight = [int]($cy - $listTop - 180)
+    [int]$listHeight = [int]($cy - $listTop - 200)
     if ($listHeight -lt 200) { $listHeight = 200 }
     $list.Size = [System.Drawing.Size]::new([int]($cx - ($pad * 2)), $listHeight)
 
@@ -612,10 +726,16 @@ function LayoutControls {
 # ---------- Events ----------
 $btnBrowseIn.Add_Click({ Choose-Folder -Target $txtInput })
 $btnBrowseOut.Add_Click({ Choose-Folder -Target $txtOutput })
+$btnBrowseArchive.Add_Click({ Choose-Folder -Target $txtArchive })
 $btnLoad.Add_Click({ Load-Files })
 
+# save settings when user edits textboxes (on leave)
+$txtInput.add_Leave({ Save-Settings })
+$txtOutput.add_Leave({ Save-Settings })
+$txtArchive.add_Leave({ Save-Settings })
+
 $btnOpenOut.Add_Click({
-    if ($txtOutput.Text -and (Test-Path $txtOutput.Text)) {
+    if ($txtOutput.Text -and (Ensure-FolderExists -Path $txtOutput.Text -PromptIfMissing $true)) {
         Start-Process explorer.exe -ArgumentList "`"$($txtOutput.Text)`""
     } else {
         Log "Folder wynikowy nie istnieje."
@@ -625,27 +745,70 @@ $btnOpenOut.Add_Click({
 $btnArchive.Add_Click({
     $rows = GetSelectedRows
     if ($rows.Count -eq 0) { Log "Brak zaznaczonych plików do archiwizacji."; return }
-    $archiveRoot = Join-Path $txtInput.Text (Get-Date -Format 'yyyy-MM-dd')
-    if (-not (Test-Path $archiveRoot)) { New-Item -ItemType Directory -Path $archiveRoot -Force | Out-Null }
-    $archiveCompressedDir = Join-Path $archiveRoot "kompresowane"
-    if (-not (Test-Path $archiveCompressedDir)) { New-Item -ItemType Directory -Path $archiveCompressedDir -Force | Out-Null }
+
+    $archiveBase = if ($txtArchive.Text) { $txtArchive.Text } else { Join-Path $txtOutput.Text "archiwum" }
+    if (-not (Ensure-FolderExists -Path $archiveBase -PromptIfMissing $true)) { Log "Anulowano operację archiwizacji (brak katalogu archiwum)."; return }
+
+    $dateFolder = Join-Path $archiveBase (Get-Date -Format 'dd-MM-yyyy')
+    $origDir = Join-Path $dateFolder "oryginaly"
+    $compDir = Join-Path $dateFolder "skompresowane"
+
+    try {
+        if (-not (Test-Path $dateFolder))   { New-Item -ItemType Directory -Path $dateFolder -Force | Out-Null }
+        if (-not (Test-Path $origDir))      { New-Item -ItemType Directory -Path $origDir -Force | Out-Null }
+        if (-not (Test-Path $compDir))      { New-Item -ItemType Directory -Path $compDir -Force | Out-Null }
+    } catch {
+        Log ("Nie można utworzyć folderu archiwum: {0}" -f $_.Exception.Message)
+        return
+    }
+
+    $countOrig = 0
+    $countComp = 0
+
     foreach ($r in $rows) {
         $src = $r.Tag
-        $dest = Join-Path $archiveRoot ([System.IO.Path]::GetFileName($src))
-        try { Move-Item -LiteralPath $src -Destination $dest -Force; $r.Cells["Status"].Value = "Przeniesiono do archiwum"; Log ("Przeniesiono oryginał: {0} -> {1}" -f [IO.Path]::GetFileName($src), $dest) } catch { Log ("Błąd przenoszenia oryginału {0}: {1}" -f [IO.Path]::GetFileName($src), $_.Exception.Message); continue }
+        $fileName = [IO.Path]::GetFileName($src)
+        $destCandidate = Join-Path $origDir $fileName
+        $destUnique = Get-UniqueFilePath -Path $destCandidate
+        try {
+            Move-Item -LiteralPath $src -Destination $destUnique -Force
+            $r.Cells["Status"].Value = "Przeniesiono do archiwum (oryg.)"
+            Log ("Przeniesiono oryginał: {0} -> {1}" -f $fileName, $destUnique)
+            $countOrig++
+        } catch {
+            Log ("Błąd przenoszenia oryginału {0}: {1}" -f $fileName, $_.Exception.Message)
+            continue
+        }
+
+        # przenieś skompresowane odpowiadające pliki (jeśli istnieją)
         $base = Sanitize-FileName([IO.Path]::GetFileNameWithoutExtension($src))
-        $outDir = $txtOutput.Text
-        if (Test-Path $outDir) {
-            $matches = Get-ChildItem -Path $outDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "$base*_kompress_*.mp4" -or $_.Name -like "$base*_kompress_*.mkv" -or $_.Name -like "$base*_kompress_*.mov" }
+        if (Test-Path $txtOutput.Text) {
+            $matches = Get-ChildItem -Path $txtOutput.Text -File -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -like "$base*_kompress_*.*"
+            }
             if ($matches -and $matches.Count -gt 0) {
                 foreach ($m in $matches) {
-                    $destC = Join-Path $archiveCompressedDir $m.Name
-                    try { Move-Item -LiteralPath $m.FullName -Destination $destC -Force; Log ("Przeniesiono skompresowany: {0}" -f $m.Name) } catch { Log ("Błąd przenoszenia skompresowanego {0}: {1}" -f $m.Name, $_.Exception.Message) }
+                    $destCcand = Join-Path $compDir $m.Name
+                    $destCUnique = Get-UniqueFilePath -Path $destCcand
+                    try {
+                        Move-Item -LiteralPath $m.FullName -Destination $destCUnique -Force
+                        Log ("Przeniesiono skompresowany: {0} -> {1}" -f $m.Name, $destCUnique)
+                        $countComp++
+                    } catch {
+                        Log ("Błąd przenoszenia skompresowanego {0}: {1}" -f $m.Name, $_.Exception.Message)
+                    }
                 }
             }
         }
     }
+
     Load-Files
+
+    # podsumowanie
+    $total = $countOrig + $countComp
+    $summary = "Zarchiwizowano: $total plików.`nOryginały: $countOrig`nSkompresowane: $countComp"
+    Log $summary
+    [System.Windows.Forms.MessageBox]::Show($summary, "Archiwizacja zakończona", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
 })
 
 $btnDelete.Add_Click({
@@ -660,17 +823,27 @@ $btnDelete.Add_Click({
     Load-Files
 })
 
-# Keep track of prev codec
+# keep track of prev codec
 $cbCodec.add_SelectedIndexChanged({ try { if ($cbCodec.SelectedItem) { $global:PrevCodec = $cbCodec.SelectedItem.ToString() } } catch {} })
 
 # Toggle PRO
 $btnTogglePro.Add_Click({
     if ($global:proCollapsed) {
-        $global:proCollapsed = $false; $btnTogglePro.Text = "PRO ▾"; $gbPro.Visible = $true; $tbl.Visible = $true; foreach ($ctrl in $tbl.Controls) { $ctrl.Visible = $true }; $chkDelete.Visible = $true
+        $global:proCollapsed = $false
+        $btnTogglePro.Text = "PRO ▾"
+        $gbPro.Visible = $true
+        $tbl.Visible = $true
+        foreach ($ctrl in $tbl.Controls) { $ctrl.Visible = $true }
     } else {
-        $global:proCollapsed = $true; $btnTogglePro.Text = "PRO ▸"; $gbPro.Visible = $false; $tbl.Visible = $false; foreach ($ctrl in $tbl.Controls) { $ctrl.Visible = $false }; $chkDelete.Visible = $false
+        $global:proCollapsed = $true
+        $btnTogglePro.Text = "PRO ▸"
+        $gbPro.Visible = $false
+        $tbl.Visible = $false
+        foreach ($ctrl in $tbl.Controls) { $ctrl.Visible = $false }
     }
-    LayoutControls; $form.Refresh()
+    $chkDelete.Visible = $true
+    LayoutControls
+    $form.Refresh()
 })
 
 # ---------- Compress logic ----------
@@ -681,7 +854,21 @@ $presetMap = @{
 }
 
 function Compress-File {
-    param([string]$FilePath,[string]$OutDir,[int]$MaxMB,[bool]$UseGPU)
+    param(
+        [string]$FilePath,
+        [string]$OutDir,
+        [int]$MaxMB,
+        [bool]$UseGPU,
+        [System.Windows.Forms.DataGridViewRow]$Row = $null
+    )
+
+    function UpdateLogProgress {
+        param([string]$msg)
+        Log $msg
+        try { $form.Refresh() } catch {}
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+
     $srcName = [IO.Path]::GetFileNameWithoutExtension($FilePath)
     $san = Sanitize-FileName $srcName
     $timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
@@ -708,39 +895,58 @@ function Compress-File {
 
     try {
         if ($modeChoice -eq "Target size (bitrate)") {
+            $totalStages = 2
+
             switch ($resolvedCodec) {
                 "HEVC NVENC" {
+                    UpdateLogProgress ("Kompresja... pass 1/$totalStages (analiza)")
                     $pass1 = @('-hide_banner','-loglevel','error','-stats','-i',$FilePath,'-c:v','hevc_nvenc','-rc','vbr','-b:v',("${bitrate}k"),'-maxrate',("${bitrate}k"),'-pass','1','-an','-f','null','NUL')
                     $r1 = Run-FFmpeg-Capture -ArgArray $pass1; if ($r1.ExitCode -ne 0) { Log "Błąd: pass 1 NVENC"; return $null }
+
+                    UpdateLogProgress ("Kompresja... pass 2/$totalStages (kodowanie)")
                     $pass2 = @('-hide_banner','-loglevel','error','-stats','-i',$FilePath,'-c:v','hevc_nvenc','-rc','vbr','-b:v',("${bitrate}k"),'-maxrate',("${bitrate}k"),'-pass','2') + $audioArgs + @($outPath)
                     $r2 = Run-FFmpeg-Capture -ArgArray $pass2; if ($r2.ExitCode -ne 0) { Log "Błąd: pass 2 NVENC"; return $null }
                 }
                 "HEVC libx265" {
+                    UpdateLogProgress ("Kompresja... pass 1/$totalStages (analiza)")
                     $pass1 = @('-hide_banner','-loglevel','error','-stats','-i',$FilePath,'-c:v','libx265','-preset',$presetCfg.x265,'-b:v',("${bitrate}k"),'-pass','1','-an','-f','null','NUL')
                     $r1 = Run-FFmpeg-Capture -ArgArray $pass1; if ($r1.ExitCode -ne 0) { Log "Błąd: pass 1 libx265"; return $null }
+
+                    UpdateLogProgress ("Kompresja... pass 2/$totalStages (kodowanie)")
                     $pass2 = @('-hide_banner','-loglevel','error','-stats','-i',$FilePath,'-c:v','libx265','-preset',$presetCfg.x265,'-b:v',("${bitrate}k"),'-pass','2') + $audioArgs + @($outPath)
                     $r2 = Run-FFmpeg-Capture -ArgArray $pass2; if ($r2.ExitCode -ne 0) { Log "Błąd: pass 2 libx265"; return $null }
                 }
                 "AV1 SVT" {
+                    UpdateLogProgress ("Kompresja... pass 1/$totalStages (analiza)")
                     $pass1 = @('-hide_banner','-loglevel','error','-stats','-i',$FilePath,'-c:v','libsvtav1','-preset',[string]$presetCfg.svt,'-b:v',("${bitrate}k"),'-pass','1','-an','-f','null','NUL')
                     $r1 = Run-FFmpeg-Capture -ArgArray $pass1; if ($r1.ExitCode -ne 0) { Log "Błąd: pass 1 SVT-AV1"; return $null }
+
+                    UpdateLogProgress ("Kompresja... pass 2/$totalStages (kodowanie)")
                     $pass2 = @('-hide_banner','-loglevel','error','-stats','-i',$FilePath,'-c:v','libsvtav1','-preset',[string]$presetCfg.svt,'-b:v',("${bitrate}k"),'-pass','2') + $audioArgs + @($outPath)
                     $r2 = Run-FFmpeg-Capture -ArgArray $pass2; if ($r2.ExitCode -ne 0) { Log "Błąd: pass 2 SVT-AV1"; return $null }
                 }
                 "AV1 libaom" {
+                    UpdateLogProgress ("Kompresja... pass 1/$totalStages (analiza)")
                     $pass1 = @('-hide_banner','-loglevel','error','-stats','-i',$FilePath,'-c:v','libaom-av1','-cpu-used',[string]$presetCfg.aom,'-b:v',("${bitrate}k"),'-pass','1','-an','-f','null','NUL')
                     $r1 = Run-FFmpeg-Capture -ArgArray $pass1; if ($r1.ExitCode -ne 0) { Log "Błąd: pass 1 libaom AV1"; return $null }
+
+                    UpdateLogProgress ("Kompresja... pass 2/$totalStages (kodowanie)")
                     $pass2 = @('-hide_banner','-loglevel','error','-stats','-i',$FilePath,'-c:v','libaom-av1','-cpu-used',[string]$presetCfg.aom,'-b:v',("${bitrate}k"),'-pass','2') + $audioArgs + @($outPath)
                     $r2 = Run-FFmpeg-Capture -ArgArray $pass2; if ($r2.ExitCode -ne 0) { Log "Błąd: pass 2 libaom AV1"; return $null }
                 }
                 "H.264 libx264" {
+                    UpdateLogProgress ("Kompresja... pass 1/$totalStages (analiza)")
                     $pass1 = @('-hide_banner','-loglevel','error','-stats','-i',$FilePath,'-c:v','libx264','-preset',$presetCfg.x264,'-b:v',("${bitrate}k"),'-maxrate',("${bitrate}k"),'-pass','1','-an','-f','null','NUL')
                     $r1 = Run-FFmpeg-Capture -ArgArray $pass1; if ($r1.ExitCode -ne 0) { Log "Błąd: pass 1 libx264"; return $null }
+
+                    UpdateLogProgress ("Kompresja... pass 2/$totalStages (kodowanie)")
                     $pass2 = @('-hide_banner','-loglevel','error','-stats','-i',$FilePath,'-c:v','libx264','-preset',$presetCfg.x264,'-b:v',("${bitrate}k"),'-maxrate',("${bitrate}k"),'-pass','2') + $audioArgs + @($outPath)
                     $r2 = Run-FFmpeg-Capture -ArgArray $pass2; if ($r2.ExitCode -ne 0) { Log "Błąd: pass 2 libx264"; return $null }
                 }
             }
         } else {
+            $totalStages = 1
+            UpdateLogProgress ("Kompresja... etap 1/$totalStages (kodowanie)")
             switch ($resolvedCodec) {
                 "HEVC NVENC" { $args = @('-hide_banner','-loglevel','error','-stats','-i',$FilePath,'-c:v','hevc_nvenc','-preset',$presetCfg.nvenc,'-cq','23') + $audioArgs + @($outPath); $r = Run-FFmpeg-Capture -ArgArray $args; if ($r.ExitCode -ne 0) { Log "Błąd: CRF NVENC"; return $null } }
                 "HEVC libx265" { $args = @('-hide_banner','-loglevel','error','-stats','-i',$FilePath,'-c:v','libx265','-preset',$presetCfg.x265,'-crf',[string]$presetCfg.crfX265) + $audioArgs + @($outPath); $r = Run-FFmpeg-Capture -ArgArray $args; if ($r.ExitCode -ne 0) { Log "Błąd: CRF libx265"; return $null } }
@@ -757,15 +963,18 @@ function Compress-File {
     if (Test-Path $outPath) {
         $sizeBytes = (Get-Item $outPath).Length
         $sizeMB = Format-SizeMB -Bytes $sizeBytes
-        Log ("OK: {0} ({1} MB)" -f [IO.Path]::GetFileName($outPath), $sizeMB)
+        UpdateLogProgress ("OK: {0} ({1} MB)" -f [IO.Path]::GetFileName($outPath), $sizeMB)
         if ($deleteOrig) { try { Remove-Item -LiteralPath $FilePath -Force; Log ("Usunięto oryginał: {0}" -f [System.IO.Path]::GetFileName($FilePath)) } catch { Log ("Nie udało się usunąć oryginału: {0}" -f [System.IO.Path]::GetFileName($FilePath)) } }
         return @{ Path = $outPath; SizeMB = $sizeMB }
-    } else { Log "Błąd: plik wyjściowy nie istnieje po kompresji."; return $null }
+    } else {
+        UpdateLogProgress "Błąd: plik wyjściowy nie istnieje po kompresji."
+        return $null
+    }
 }
 
 $btnCompress.Add_Click({
     if ([string]::IsNullOrWhiteSpace($txtOutput.Text)) { Log "Nie podano katalogu wyjściowego."; return }
-    if (-not (Test-Path $txtOutput.Text)) { try { New-Item -ItemType Directory -Path $txtOutput.Text -Force | Out-Null } catch { Log "Nie można utworzyć katalogu wyjściowego."; return } }
+    if (-not (Ensure-FolderExists -Path $txtOutput.Text -PromptIfMissing $true)) { Log "Anulowano kompresję (brak katalogu wyjściowego)."; return }
     $rows = GetSelectedRows
     if ($rows.Count -eq 0) { Log "Brak zaznaczonych plików do kompresji."; return }
     $maxMB = [int]$nudSize.Value
@@ -784,11 +993,70 @@ $btnCompress.Add_Click({
 
 # ---------- Init on show ----------
 $form.Add_Shown({
+    # base dir and settings file
     $base = Get-ScriptBaseDirectory
-    if (-not $txtInput.Text) { $txtInput.Text = Join-Path $base "do_kompresji" }
-    if (-not $txtOutput.Text) { $txtOutput.Text = Join-Path $base "kompress_10mb" }
-    if (-not (Test-Path $txtInput.Text)) { New-Item -ItemType Directory -Path $txtInput.Text -Force | Out-Null }
-    if (-not (Test-Path $txtOutput.Text)) { New-Item -ItemType Directory -Path $txtOutput.Text -Force | Out-Null }
+    $settingsFile = Join-Path $base 'kompresor_settings.json'
+
+    # helper: create default folders next to script, fallback to user Videos/Desktop
+    function Get-DefaultPaths {
+        param($baseDir)
+
+        $tryInput  = Join-Path $baseDir "do_kompresji"
+        $tryOutput = Join-Path $baseDir "kompress_10mb"
+        $tryArchive = Join-Path $tryOutput "archiwum"
+
+        try {
+            if (-not (Test-Path $tryInput))  { New-Item -ItemType Directory -Path $tryInput  -Force | Out-Null }
+            if (-not (Test-Path $tryOutput)) { New-Item -ItemType Directory -Path $tryOutput -Force | Out-Null }
+            if (-not (Test-Path $tryArchive)) { New-Item -ItemType Directory -Path $tryArchive -Force | Out-Null }
+            return @{ input = $tryInput; output = $tryOutput; archive = $tryArchive }
+        } catch {
+            $userVideos = Join-Path $env:USERPROFILE "Videos"
+            if (-not (Test-Path $userVideos)) { $userVideos = Join-Path $env:USERPROFILE "Desktop" }
+            $fbBase = Join-Path $userVideos "kompresor"
+            $fbInput = Join-Path $fbBase "do_kompresji"
+            $fbOutput = Join-Path $fbBase "kompress_10mb"
+            $fbArchive = Join-Path $fbOutput "archiwum"
+            if (-not (Test-Path $fbInput))  { New-Item -ItemType Directory -Path $fbInput  -Force | Out-Null }
+            if (-not (Test-Path $fbOutput)) { New-Item -ItemType Directory -Path $fbOutput -Force | Out-Null }
+            if (-not (Test-Path $fbArchive)) { New-Item -ItemType Directory -Path $fbArchive -Force | Out-Null }
+            return @{ input = $fbInput; output = $fbOutput; archive = $fbArchive }
+        }
+    }
+
+    # load or create settings (remember last/default paths)
+    if (Test-Path $settingsFile) {
+        try {
+            $cfg = Get-Content $settingsFile -Raw | ConvertFrom-Json -ErrorAction Stop
+            $defInput = $cfg.DefaultInput
+            $defOutput = $cfg.DefaultOutput
+            $defArchive = $cfg.DefaultArchive
+            try {
+                if ($defInput -and -not (Test-Path $defInput)) { if (-not (Ensure-FolderExists -Path $defInput -PromptIfMissing $true)) { throw "cfg input missing" } }
+                if ($defOutput -and -not (Test-Path $defOutput)) { if (-not (Ensure-FolderExists -Path $defOutput -PromptIfMissing $true)) { throw "cfg output missing" } }
+                if ($defArchive -and -not (Test-Path $defArchive)) { # ask to create
+                    $res = [System.Windows.Forms.MessageBox]::Show("Katalog archiwum `"$defArchive`" nie istnieje. Utworzyć go?","Brak katalogu",[System.Windows.Forms.MessageBoxButtons]::YesNo,[System.Windows.Forms.MessageBoxIcon]::Question)
+                    if ($res -eq [System.Windows.Forms.DialogResult]::Yes) { New-Item -ItemType Directory -Path $defArchive -Force | Out-Null } else { throw "cfg archive missing" }
+                }
+            } catch {
+                $paths = Get-DefaultPaths -baseDir $base
+                $defInput = $paths.input; $defOutput = $paths.output; $defArchive = $paths.archive
+            }
+        } catch {
+            $paths = Get-DefaultPaths -baseDir $base
+            $defInput = $paths.input; $defOutput = $paths.output; $defArchive = $paths.archive
+        }
+    } else {
+        $paths = Get-DefaultPaths -baseDir $base
+        $defInput = $paths.input; $defOutput = $paths.output; $defArchive = $paths.archive
+        $save = @{ DefaultInput = $defInput; DefaultOutput = $defOutput; DefaultArchive = $defArchive } | ConvertTo-Json
+        try { $save | Set-Content -Path $settingsFile -Encoding UTF8 -Force } catch { }
+    }
+
+    # set fields if empty
+    if (-not $txtInput.Text)  { $txtInput.Text  = $defInput }
+    if (-not $txtOutput.Text) { $txtOutput.Text = $defOutput }
+    if (-not $txtArchive.Text) { $txtArchive.Text = $defArchive }
 
     # detect encoders and GPU
     $global:AvailableEncoders = Detect-CodecAvailability
@@ -798,26 +1066,25 @@ $form.Add_Shown({
     # report to GUI log
     Report-EncoderStatus -enc $global:AvailableEncoders -gpuOk $global:gpuOk
 
-    # also print a compact console summary (ładne, bez "0 1 2")
-	Write-Host "Kompresor PRO | MAX FORCE edition"
-	Write-Host "---------------------------------"
-	Write-Host "Encoder detection summary:" -ForegroundColor Cyan
-	$friendly = @{
-		hevc_nvenc = "HEVC NVENC"
-		libx265    = "libx265 (HEVC)"
-		libx264    = "libx264 (H.264)"
-		libsvtav1  = "libsvtav1 (SVT-AV1)"
-		"libaom-av1" = "libaom-av1 (AOM-AV1)"
-	}
-	foreach ($k in @('hevc_nvenc','libx265','libx264','libsvtav1','libaom-av1')) {
-		$present = if ($global:AvailableEncoders[$k]) { 'YUP' } else { 'NOPE' }
-		Write-Host ("{0,-26} : {1}" -f $friendly[$k], $present)
-	}
-	if ($global:AvailableEncoders['hevc_nvenc']) {
-		$gpuMark = if ($global:gpuOk) { 'YUP (NVENC działa)' } else { 'NOPE (NVENC test nie przeszedł)' }
-		Write-Host ("NVENC GPU test: {0}" -f $gpuMark) -ForegroundColor Yellow
-	}
-	Write-Host ""
+    Write-Host "Kompresor PRO | MAX FORCE edition"
+    Write-Host "---------------------------------"
+    Write-Host "Encoder detection summary:" -ForegroundColor Cyan
+    $friendly = @{
+        hevc_nvenc = "HEVC NVENC"
+        libx265    = "libx265 (HEVC)"
+        libx264    = "libx264 (H.264)"
+        libsvtav1  = "libsvtav1 (SVT-AV1)"
+        "libaom-av1" = "libaom-av1 (AOM-AV1)"
+    }
+    foreach ($k in @('hevc_nvenc','libx265','libx264','libsvtav1','libaom-av1')) {
+        $present = if ($global:AvailableEncoders[$k]) { 'YUP' } else { 'NOPE' }
+        Write-Host ("{0,-26} : {1}" -f $friendly[$k], $present)
+    }
+    if ($global:AvailableEncoders['hevc_nvenc']) {
+        $gpuMark = if ($global:gpuOk) { 'YUP (NVENC działa)' } else { 'NOPE (NVENC test nie przeszedł)' }
+        Write-Host ("NVENC GPU test: {0}" -f $gpuMark) -ForegroundColor Yellow
+    }
+    Write-Host ""
 
     # Build codec list for combo
     Build-CodecList
@@ -840,12 +1107,13 @@ $form.Add_Shown({
     if ($defaultCodec -match 'NVENC') { $lblFooterRight.ForeColor = $clrSuccess } else { $lblFooterRight.ForeColor = $clrWarn }
 
     Log "Inicjalizacja zakończona."
+
     $global:proCollapsed = $true
     $gbPro.Visible = $false
     $gbEnc.Visible = $true
     $tbl.Visible = $false
     foreach ($ctrl in $tbl.Controls) { $ctrl.Visible = $false }
-    $chkDelete.Visible = $false
+    $chkDelete.Visible = $true
     $btnTogglePro.Text = "PRO ▸"
 
     LayoutControls
