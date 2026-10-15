@@ -6,7 +6,7 @@
 🇵🇱 Szybki start — polski poniżej
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/0f317399-1ec4-4e03-9b7e-d5bc2a87d64c" width="48%" alt="Kompresor PRO GUI">
+  <img src="https://github.com/user-attachments/assets/f55f6a2e-328d-4c08-9052-2680ad69f7c7" width="48%" alt="Kompresor PRO GUI">
   <img src="https://github.com/user-attachments/assets/74b659ff-753f-451f-88f7-9539c2dc3830" width="48%" alt="Licencja">
 </p>
 ---
